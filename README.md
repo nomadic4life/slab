@@ -1,4 +1,4 @@
-# Slab (Zero-Copy)
+# Incognitus Slab (Zero-Copy)
 
 This project implements a simple slab designed for Solana accounts with zero-copy access.
 It is a functional MVP meant to validate the core allocator behavior before full spec compliance.
