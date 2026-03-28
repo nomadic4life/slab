@@ -892,6 +892,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "incognitus-slab"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "bytemuck",
+ "solana-program",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1439,15 +1448,6 @@ checksum = "16d69225bde7a69b235da73377861095455d298f2b970996eec25ddbb42b3d1e"
 dependencies = [
  "bitmaps",
  "typenum",
-]
-
-[[package]]
-name = "slab"
-version = "0.1.0"
-dependencies = [
- "anchor-lang",
- "bytemuck",
- "solana-program",
 ]
 
 [[package]]
