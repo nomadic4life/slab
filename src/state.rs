@@ -5,10 +5,8 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::error::SlabError;
 
-pub const NODE_FREE: u8 = 0;
-pub const NODE_LEAF: u8 = 1;
-pub const NODE_INTERNAL: u8 = 2;
 pub const NONE_U32: u32 = u32::MAX;
+pub const NONE_U64: u64 = u64::MAX;
 
 // 8-byte alignment keeps offset math simple and predictable for zero-copy.
 #[repr(C, align(8))]
@@ -20,35 +18,25 @@ pub struct SlabHeader {
     pub free_stack_head: u32,
 }
 
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NodeType {
-    Free = NODE_FREE,
-    Leaf = NODE_LEAF,
-    Internal = NODE_INTERNAL,
-}
-
-// Fixed-size node used for the free stack. Other node kinds can reuse the same slot.
-// Offsets are 32-bit to keep the header compact and cheap to load.
-#[repr(C, align(8))]
+// Fixed-size header used for the free stack. Stored inside the first 8 bytes of a slot.
+// The "pointer" is a raw byte offset (u64) into the account data, not a CPU address.
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct FreeNode {
-    pub node_type: u8,
-    pub _pad0: [u8; 3],
-    pub next_free: u32,
-    pub _pad1: [u8; 8],
+    pub next_free: u64,
 }
 
 pub const HEADER_SIZE: usize = size_of::<SlabHeader>();
-pub const NODE_SIZE: usize = size_of::<FreeNode>();
 
-pub struct SlabMut<'a> {
+// Generic slab where each slot is SLOT_SIZE bytes.
+// Each node type should have its own slab (separate pool).
+pub struct SlabMut<'a, const SLOT_SIZE: usize> {
     data: &'a mut [u8],
     header_ptr: *mut SlabHeader,
     _marker: PhantomData<&'a mut SlabHeader>,
 }
 
-impl<'a> SlabMut<'a> {
+impl<'a, const SLOT_SIZE: usize> SlabMut<'a, SLOT_SIZE> {
     pub fn init(data: &'a mut [u8]) -> Result<Self, SlabError> {
         let mut slab = Self::from_account_data(data)?;
         let first = slab.first_node_offset() as u32;
@@ -87,8 +75,8 @@ impl<'a> SlabMut<'a> {
     }
 
     fn first_node_offset(&self) -> usize {
-        // Align the first node start to the node's alignment boundary.
-        let align = align_of::<FreeNode>();
+        // Align the first slot start to 8 bytes for BPF-friendly access.
+        let align = 8usize;
         (HEADER_SIZE + (align - 1)) & !(align - 1)
     }
 
@@ -98,11 +86,10 @@ impl<'a> SlabMut<'a> {
         if offset < first {
             return Err(SlabError::OutOfBounds);
         }
-        let align = align_of::<FreeNode>();
-        if offset % align != 0 {
+        if offset % 8 != 0 {
             return Err(SlabError::Misaligned);
         }
-        let end = offset + NODE_SIZE;
+        let end = offset + SLOT_SIZE;
         if end > self.data.len() {
             return Err(SlabError::OutOfBounds);
         }
@@ -110,13 +97,14 @@ impl<'a> SlabMut<'a> {
     }
 
     pub fn node_bytes_mut(&mut self, offset: u32) -> Result<&mut [u8], SlabError> {
+        // Direct zero-copy access to the slot bytes by raw offset.
         let offset = self.validate_offset(offset)?;
-        Ok(&mut self.data[offset..offset + NODE_SIZE])
+        Ok(&mut self.data[offset..offset + SLOT_SIZE])
     }
 
     fn free_node_mut(&mut self, offset: u32) -> Result<&mut FreeNode, SlabError> {
         let offset = self.validate_offset(offset)?;
-        let bytes = &mut self.data[offset..offset + NODE_SIZE];
+        let bytes = &mut self.data[offset..offset + size_of::<FreeNode>()];
         if (bytes.as_ptr() as usize) % align_of::<FreeNode>() != 0 {
             return Err(SlabError::Misaligned);
         }
@@ -129,15 +117,16 @@ impl<'a> SlabMut<'a> {
         if head != NONE_U32 {
             let node = self.free_node_mut(head)?;
             // Linked-list of offsets stored inside the freed nodes.
-            self.header_mut().free_stack_head = node.next_free;
+            self.header_mut().free_stack_head = node.next_free as u32;
             return Ok(head);
         }
 
         let bump = self.header().bump_offset as usize;
-        let end = bump + NODE_SIZE;
+        let end = bump + SLOT_SIZE;
         if end > self.data.len() {
             return Err(SlabError::OutOfSpace);
         }
+        // Bump allocation returns the next raw byte offset.
         self.header_mut().bump_offset = end as u32;
         Ok(bump as u32)
     }
@@ -146,9 +135,8 @@ impl<'a> SlabMut<'a> {
     pub fn push_free_node(&mut self, offset: u32) -> Result<(), SlabError> {
         let head = self.header().free_stack_head;
         let node = self.free_node_mut(offset)?;
-        node.node_type = NODE_FREE;
         // Store the next free offset in the first 4 bytes of the freed node.
-        node.next_free = head;
+        node.next_free = head as u64;
         self.header_mut().free_stack_head = offset;
         Ok(())
     }
@@ -161,13 +149,13 @@ mod tests {
     #[test]
     fn mvp_stack_lifo() {
         let mut data = [0u8; 256];
-        let mut slab = SlabMut::init(&mut data).unwrap();
+        let mut slab = SlabMut::<32>::init(&mut data).unwrap();
 
         let a = slab.pop_free_node().unwrap();
         let b = slab.pop_free_node().unwrap();
         let first = slab.first_node_offset() as u32;
         assert_eq!(a, first);
-        assert_eq!(b, (first + NODE_SIZE as u32));
+        assert_eq!(b, (first + 32));
 
         slab.push_free_node(a).unwrap();
         let c = slab.pop_free_node().unwrap();

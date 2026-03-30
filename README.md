@@ -15,7 +15,8 @@ It is a functional MVP meant to validate the core allocator behavior before full
 - Offsets are stored as `u32`, which limits the slab max size but keeps the header compact.
 
 **MVP scope**
-- Single account, fixed-size nodes.
+- Single account, fixed-size nodes per slab.
+- Each node type uses its own slab (separate memory pool).
 - LIFO free stack + bump allocation.
 - No resize, no stack-node variants, no min-swap optimization yet.
 
@@ -25,14 +26,14 @@ offset inside the account data. The "pointer" is a `u32` offset, not a CPU addre
 
 **Free stack as a linked list of offsets**
 - The header stores the offset of the first free node.
-- A freed node writes the next free offset into its first 4 bytes.
+- A freed node writes the next free offset into its first 8 bytes.
 - Allocation pops offsets from this list and jumps straight to the node.
 
 **Core formula**
 Offsets are raw byte positions. For fixed-size nodes, valid offsets are aligned and
 computed as:
 ```
-Offset = HEADER_SIZE + (index * NODE_SIZE)
+Offset = HEADER_SIZE + (index * SLOT_SIZE)
 ```
 The allocator stores and returns these offsets directly, so jumps are O(1) with no array
 loading. This is manual memory management over a raw byte buffer, which is exactly what
