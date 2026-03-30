@@ -6,6 +6,7 @@ pub enum SlabError {
     Misaligned,
     OutOfBounds,
     OutOfSpace,
+    ResizeInterrupt,
 }
 
 impl From<SlabError> for ProgramError {
